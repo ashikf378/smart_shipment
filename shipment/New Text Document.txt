@@ -1,0 +1,1 @@
+"C:\Program Files\mosquitto\mosquitto_sub" -h broker.hivemq.com -t "sensor/mpu6050/data"
