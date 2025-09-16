@@ -1,0 +1,167 @@
+#include <Wire.h>
+
+const int MPU_ADDR = 0x68;
+
+// Calibration variables for raw sensor readings
+int16_t acc_x_offset, acc_y_offset, acc_z_offset;
+int16_t gyro_x_offset, gyro_y_offset, gyro_z_offset;
+
+// Raw sensor readings
+int16_t acc_x_raw, acc_y_raw, acc_z_raw;
+int16_t gyro_x_raw, gyro_y_raw, gyro_z_raw;
+int16_t rawTemp;
+
+// Filtered outputs
+float acc_x_out, acc_y_out, acc_z_out;
+float gyro_x_out, gyro_y_out, gyro_z_out;
+
+// Button variables
+int lastButtonState = HIGH;
+bool loggingActive = false;
+long int tempCount = 0;
+
+void setup() {
+  pinMode(0, INPUT_PULLUP);
+  Wire.begin(4, 5);
+  Wire.setClock(400000);
+  writeByte(MPU_ADDR, 0x6B, 0);
+  writeByte(MPU_ADDR, 0x1C, 0x00);
+  writeByte(MPU_ADDR, 0x1B, 0x00);
+  delay(100);
+  Serial.begin(115200);
+
+  Serial.println("Starting calibration... Keep sensor flat and still!");
+  delay(2000);
+
+  // Calibrate using raw integer values for better precision
+  long acc_x_sum = 0, acc_y_sum = 0, acc_z_sum = 0;
+  long gyro_x_sum = 0, gyro_y_sum = 0, gyro_z_sum = 0;
+
+  // Take 500 samples for calibration
+  for (int i = 0; i < 500; i++) {
+    readRawData();
+    
+    acc_x_sum += acc_x_raw;
+    acc_y_sum += acc_y_raw;
+    acc_z_sum += acc_z_raw;
+    
+    gyro_x_sum += gyro_x_raw;
+    gyro_y_sum += gyro_y_raw;
+    gyro_z_sum += gyro_z_raw;
+    
+    delay(10);
+  }
+
+  // Calculate average offsets
+  acc_x_offset = acc_x_sum / 500;
+  acc_y_offset = acc_y_sum / 500;
+  acc_z_offset = acc_z_sum / 500 - 16384; // Subtract 1g (16384 counts for ±2g range)
+  
+  gyro_x_offset = gyro_x_sum / 500;
+  gyro_y_offset = gyro_y_sum / 500;
+  gyro_z_offset = gyro_z_sum / 500;
+
+  Serial.println("Calibration complete!");
+}
+
+void readRawData() {
+  Wire.beginTransmission(MPU_ADDR);
+  Wire.write(0x3B);
+  Wire.endTransmission(false);
+  Wire.requestFrom(MPU_ADDR, 14, true);
+
+  // Read raw sensor data
+  acc_x_raw = Wire.read() << 8 | Wire.read();
+  acc_y_raw = Wire.read() << 8 | Wire.read();
+  acc_z_raw = Wire.read() << 8 | Wire.read();
+  rawTemp = Wire.read() << 8 | Wire.read();
+  gyro_x_raw = Wire.read() << 8 | Wire.read();
+  gyro_y_raw = Wire.read() << 8 | Wire.read();
+  gyro_z_raw = Wire.read() << 8 | Wire.read();
+}
+
+void readAndConvert() {
+  readRawData();
+  
+  // Apply calibration to raw data
+  acc_x_raw -= acc_x_offset;
+  acc_y_raw -= acc_y_offset;
+  acc_z_raw -= acc_z_offset;
+  
+  gyro_x_raw -= gyro_x_offset;
+  gyro_y_raw -= gyro_y_offset;
+  gyro_z_raw -= gyro_z_offset;
+
+  // Convert to physical units
+  acc_x_out = acc_x_raw / 16384.0;
+  acc_y_out = acc_y_raw / 16384.0;
+  acc_z_out = acc_z_raw / 16384.0;
+  
+  gyro_x_out = gyro_x_raw / 131.0;
+  gyro_y_out = gyro_y_raw / 131.0;
+  gyro_z_out = gyro_z_raw / 131.0;
+
+  // Apply low-pass filter
+  static float filtered_acc_x, filtered_acc_y, filtered_acc_z;
+  static float filtered_gyro_x, filtered_gyro_y, filtered_gyro_z;
+  
+  filtered_acc_x = 0.3 * acc_x_out + 0.7 * filtered_acc_x;
+  filtered_acc_y = 0.3 * acc_y_out + 0.7 * filtered_acc_y;
+  filtered_acc_z = 0.3 * acc_z_out + 0.7 * filtered_acc_z;
+  
+  filtered_gyro_x = 0.3 * gyro_x_out + 0.7 * filtered_gyro_x;
+  filtered_gyro_y = 0.3 * gyro_y_out + 0.7 * filtered_gyro_y;
+  filtered_gyro_z = 0.3 * gyro_z_out + 0.7 * filtered_gyro_z;
+  
+  acc_x_out = filtered_acc_x;
+  acc_y_out = filtered_acc_y;
+  acc_z_out = filtered_acc_z;
+  gyro_x_out = filtered_gyro_x;
+  gyro_y_out = filtered_gyro_y;
+  gyro_z_out = filtered_gyro_z;
+}
+
+void loop() {
+  int currentButtonState = digitalRead(0);
+  
+  if (currentButtonState == LOW && lastButtonState == HIGH) {
+    loggingActive = true;
+    tempCount = 0;
+  }
+
+  if (currentButtonState == HIGH && lastButtonState == LOW) {
+    loggingActive = false;
+    Serial.print("Total samples: ");
+    Serial.println(tempCount);
+  }
+
+  if (loggingActive) {
+    readAndConvert();
+    
+    float tempC = rawTemp / 340.0 + 36.53;
+    
+    Serial.print(acc_x_out, 4);
+    Serial.print(",");
+    Serial.print(acc_y_out, 4);
+    Serial.print(",");
+    Serial.print(acc_z_out, 4);
+    Serial.print(",");
+    Serial.print(gyro_x_out, 4);
+    Serial.print(",");
+    Serial.print(gyro_y_out, 4);
+    Serial.print(",");
+    Serial.println(gyro_z_out, 4);
+    
+    tempCount++;
+  }
+
+  lastButtonState = currentButtonState;
+  delay(20);
+}
+
+void writeByte(uint8_t address, uint8_t reg, uint8_t data) {
+  Wire.beginTransmission(address);
+  Wire.write(reg);
+  Wire.write(data);
+  Wire.endTransmission();
+}
